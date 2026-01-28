@@ -8,8 +8,9 @@ services:
       - "3000:3000"  # Backend API
       - "4200:4200"  # Frontend
     volumes:
-      - ./media:/data/media              # Your media files
-      - media-library-data:/data         # Database and thumbnails
+      - ./media:/data/media                    # Your media files
+      - media-library-data:/data              # Database
+      - ./thumbnails:/data/thumbnails         # Thumbnails (change to external path if needed)
     environment:
       - NODE_ENV=production
       - PORT=3000

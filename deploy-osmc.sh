@@ -3,10 +3,10 @@
 ################################################################################
 # Media Library - OSMC Quick Deployment Script
 # 
-# Usage: ./deploy-osmc.sh [MEDIA_DIR] [DEPLOYMENT_TYPE]
+# Usage: ./deploy-osmc.sh [MEDIA_DIR] [THUMB_DIR] [DB_FILE] [DEPLOYMENT_TYPE]
 # Examples:
-#   ./deploy-osmc.sh /home/osmc/Videos native
-#   ./deploy-osmc.sh /home/osmc/Videos docker
+#   ./deploy-osmc.sh /home/osmc/Videos /data/thumbnails /opt/media/media.db native
+#   ./deploy-osmc.sh /home/osmc/Videos "" "" docker
 #   ./deploy-osmc.sh  # Interactive mode
 ################################################################################
 
@@ -22,7 +22,9 @@ NC='\033[0m' # No Color
 # Configuration
 MEDIA_LIBRARY_DIR="/opt/media-library"
 MEDIA_DIR="${1:-}"
-DEPLOYMENT_TYPE="${2:-}"
+THUMB_DIR="${2:-}"
+DB_FILE="${3:-}"
+DEPLOYMENT_TYPE="${4:-}"
 
 echo -e "${BLUE}╔════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║   Media Library - OSMC Deployment Script              ║${NC}"
@@ -100,6 +102,64 @@ interactive_mode() {
     done
     echo ""
     
+    # Get thumbnails directory
+    read -p "Enter thumbnails directory path [leave empty to use app directory]: " input_thumb_dir
+    if [ -z "$input_thumb_dir" ]; then
+        THUMB_DIR=""
+        print_success "Thumbnails will be stored in app directory"
+    else
+        THUMB_DIR="$input_thumb_dir"
+        if [ ! -d "$THUMB_DIR" ]; then
+            print_warning "Directory does not exist: $THUMB_DIR"
+            read -p "Create it? (y/n) " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                mkdir -p "$THUMB_DIR"
+                print_success "Created $THUMB_DIR"
+            fi
+        else
+            print_success "Using thumbnails directory: $THUMB_DIR"
+        fi
+    fi
+    echo ""
+    
+    # Get database file location
+    read -p "Enter database file path [leave empty to use app directory]: " input_db_file
+    if [ -z "$input_db_file" ]; then
+        DB_FILE=""
+        print_success "Database will be stored in app directory (RECOMMENDED)"
+    else
+        DB_FILE="$input_db_file"
+        # Check if path parent directory exists
+        db_parent=$(dirname "$DB_FILE")
+        if [ ! -d "$db_parent" ]; then
+            print_warning "Parent directory does not exist: $db_parent"
+            read -p "Create it? (y/n) " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                mkdir -p "$db_parent"
+                print_success "Created $db_parent"
+            fi
+        else
+            print_success "Using database file: $DB_FILE"
+        fi
+        
+        # Warn about unsafe locations
+        if [[ "$DB_FILE" == *"/mnt/nas"* ]] || [[ "$DB_FILE" == *"nfs"* ]] || [[ "$DB_FILE" == *"cifs"* ]]; then
+            print_warning "⚠️  WARNING: Network storage for database is NOT recommended!"
+            print_warning "SQLite on network storage can cause corruption and performance issues."
+            echo "     Recommended: Use local SSD or fast external drive."
+            read -p "Continue with network storage? (y/n) " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                echo "Please enter a local path for the database."
+                read -p "Enter database file path: " input_db_file
+                DB_FILE="$input_db_file"
+            fi
+        fi
+    fi
+    echo ""
+    
     # Get deployment type
     echo "Deployment methods:"
     echo "  1) Native (systemd services)"
@@ -152,7 +212,7 @@ deploy_native() {
 PORT=3000
 NODE_ENV=production
 MEDIA_DIR=$MEDIA_DIR
-THUMB_DIR=$MEDIA_LIBRARY_DIR/thumbnails
+THUMB_DIR=${THUMB_DIR:-$MEDIA_LIBRARY_DIR/thumbnails}
 DB_FILE=$MEDIA_LIBRARY_DIR/media.db
 EOF
     print_success "Backend deployed"
@@ -299,6 +359,8 @@ print_access_info() {
     fi
     echo ""
     echo "Media directory:    $MEDIA_DIR"
+    echo "Thumbnails dir:     ${THUMB_DIR:-$MEDIA_LIBRARY_DIR/thumbnails}"
+    echo "Database file:      ${DB_FILE:-$MEDIA_LIBRARY_DIR/media.db}"
     echo "Library directory:  $MEDIA_LIBRARY_DIR"
     echo ""
     print_success "Ready to use!"
@@ -321,9 +383,11 @@ main() {
     fi
     
     echo -e "${YELLOW}Configuration:${NC}"
-    echo "  Media Directory:  $MEDIA_DIR"
-    echo "  Deployment Type:  $DEPLOYMENT_TYPE"
-    echo "  Library Dir:      $MEDIA_LIBRARY_DIR"
+    echo "  Media Directory:      $MEDIA_DIR"
+    echo "  Thumbnails Directory: ${THUMB_DIR:-$MEDIA_LIBRARY_DIR/thumbnails}"
+    echo "  Database File:        ${DB_FILE:-$MEDIA_LIBRARY_DIR/media.db}"
+    echo "  Deployment Type:      $DEPLOYMENT_TYPE"
+    echo "  Library Dir:          $MEDIA_LIBRARY_DIR"
     echo ""
     
     read -p "Continue? (y/n) " -n 1 -r

@@ -38,7 +38,7 @@ bower_components
 build/Release
 
 # Data files
-backend/media
+backend/media/
 backend/thumbnails
 backend/media.db
 

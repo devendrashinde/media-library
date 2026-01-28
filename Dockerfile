@@ -30,14 +30,14 @@ app.listen(4200, () => console.log("Frontend: 4200")); \
 ' > /app/frontend-server.js
 
 # Create data directories
-RUN mkdir -p /data/media /data/thumbnails
+RUN mkdir -p /data/media /data/thumbnails /data/db
 
 # Environment variables
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV MEDIA_DIR=/data/media
 ENV THUMB_DIR=/data/thumbnails
-ENV DB_FILE=/data/media.db
+ENV DB_FILE=/data/db/media.db
 
 # Expose ports
 EXPOSE 3000 4200

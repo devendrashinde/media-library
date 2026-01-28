@@ -21,6 +21,12 @@ param(
     [string]$MediaDir = "/home/osmc/Videos",
     
     [Parameter(Mandatory=$false)]
+    [string]$ThumbDir = "",
+    
+    [Parameter(Mandatory=$false)]
+    [string]$DbFile = "",
+    
+    [Parameter(Mandatory=$false)]
     [ValidateSet("native", "docker")]
     [string]$DeployType = "native"
 )
@@ -41,6 +47,16 @@ Write-Host "Configuration:" -ForegroundColor Yellow
 Write-Host "  Pi Host: $PiHost"
 Write-Host "  Pi User: $PiUser"
 Write-Host "  Media Directory: $MediaDir"
+if ($ThumbDir) {
+    Write-Host "  Thumbnails Directory: $ThumbDir"
+} else {
+    Write-Host "  Thumbnails Directory: (same as app directory)"
+}
+if ($DbFile) {
+    Write-Host "  Database File: $DbFile"
+} else {
+    Write-Host "  Database File: (same as app directory)"
+}
 Write-Host "  Deployment Type: $DeployType"
 Write-Host ""
 
@@ -140,7 +156,7 @@ Write-Host "[6/6] Running deployment on Raspberry Pi..." -ForegroundColor Blue
 Write-Host "This may take a few minutes..." -ForegroundColor Yellow
 Write-Host ""
 
-ssh -t "$PiUser@$PiHost" "cd /home/$PiUser/media-library && ./deploy-osmc.sh $MediaDir $DeployType"
+ssh -t "$PiUser@$PiHost" "cd /home/$PiUser/media-library && ./deploy-osmc.sh $MediaDir $ThumbDir $DbFile $DeployType"
 
 Write-Host ""
 Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Green

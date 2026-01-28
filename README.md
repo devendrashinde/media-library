@@ -82,7 +82,7 @@ A full-stack web application for browsing, organizing, and playing your media co
    Create a `.env` file in the backend directory:
    ```env
    MEDIA_DIR=./media
-   THUMB_DIR=./thumbnails
+   THUMB_DIR=./thumbnails              # Can point to external storage
    DB_FILE=media.db
    PORT=3000
    NODE_ENV=development
@@ -119,7 +119,7 @@ docker-compose up -d
 # Backend API: http://localhost:3000
 ```
 
-Place your media files in the `./media` directory and they will be automatically indexed.
+Place your media files in the `./media` directory. Thumbnails can be configured to use a separate location in `docker-compose.yml` under the volumes section.
 
 ## 📦 Deployment
 
@@ -153,7 +153,12 @@ For detailed instructions on deploying to Raspberry Pi running OSMC:
 - **General OSMC Setup**: See [OSMC_DEPLOYMENT_GUIDE.md](OSMC_DEPLOYMENT_GUIDE.md)
 - **Docker on OSMC**: See [DOCKER_DEPLOYMENT.md](DOCKER_DEPLOYMENT.md)
 
-Quick deployment from Windows:
+Quick deployment from Windows with separate thumbnails directory:
+```powershell
+.\deploy-to-pi.ps1 -PiHost 192.168.1.XXX -PiUser osmc -MediaDir /path/to/media -ThumbDir /path/to/external/thumbnails
+```
+
+Or with default thumbnails location:
 ```powershell
 .\deploy-to-pi.ps1 -PiHost 192.168.1.XXX -PiUser osmc -MediaDir /path/to/media
 ```
@@ -192,13 +197,119 @@ For production configuration and optimizations, see [PRODUCTION_CONFIG.md](PRODU
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MEDIA_DIR` | `./media` | Directory containing your media files |
-| `THUMB_DIR` | `./thumbnails` | Directory for generated thumbnails |
-| `DB_FILE` | `media.db` | SQLite database file path |
-| `PORT` | `3000` | Backend server port |
-| `NODE_ENV` | `development` | Environment mode |
+| Variable | Default | Configurable | Recommended Storage |
+|----------|---------|--------------|---------------------|
+| `MEDIA_DIR` | `./media` | ✅ | Slow + Large (HDD/NAS) |
+| `THUMB_DIR` | `./thumbnails` | ✅ | Medium Speed + Flexible |
+| `DB_FILE` | `media.db` | ✅ | **Fast + Reliable (SSD)** |
+| `PORT` | `3000` | ✅ | N/A |
+| `NODE_ENV` | `development` | ✅ | N/A |
+
+### 📁 Storage Configuration
+
+#### Media Directory (MEDIA_DIR)
+Configure where your media files are located:
+```bash
+# External USB drive
+MEDIA_DIR=/mnt/usb-drive/media
+
+# NAS storage
+MEDIA_DIR=/mnt/nas/videos
+
+# Local directory
+MEDIA_DIR=/home/user/Videos
+```
+
+#### Thumbnails Directory (THUMB_DIR)
+Configure where generated thumbnails are stored (optional):
+```bash
+# External USB or SSD (recommended)
+THUMB_DIR=/mnt/external-ssd/thumbnails
+
+# NAS mount (acceptable)
+THUMB_DIR=/mnt/nas/thumbnails
+
+# Default (in app directory)
+THUMB_DIR=./thumbnails
+```
+
+#### Database File (DB_FILE) ⚠️ **Important**
+Configure where the SQLite database is stored:
+
+**✅ RECOMMENDED** (Fast, Reliable):
+```bash
+# Local SSD (BEST - fastest performance)
+DB_FILE=/opt/media-library/media.db
+
+# External fast USB 3.0+ SSD
+DB_FILE=/mnt/fast-ssd/media.db
+```
+
+**⚠️ CAUTION** (May cause issues):
+```bash
+# USB 2.0 or slow external drive
+DB_FILE=/mnt/slow-usb/media.db              # Too slow!
+
+# Network storage (NAS, NFS, SMB)
+DB_FILE=/mnt/nas/media.db                   # ❌ SQLite corruption risk!
+```
+
+**Why Database Storage Matters:**
+
+SQLite requires:
+- **Fast random I/O** - Database access patterns are random
+- **Reliable file locking** - Network storage can have issues
+- **Local access** - Network latency affects every query
+- **Durability** - Power loss on slow storage risks data corruption
+
+**Problem with Network Storage:**
+```
+❌ SQLite on NAS Issues:
+- File locking failures over network
+- Higher latency (100ms+ vs 1ms local)
+- Potential database corruption
+- Connection timeout problems
+- Concurrency conflicts
+- Performance degradation (10-100x slower)
+```
+
+### Docker Volume Configuration
+
+Configure storage for your media library:
+
+```yaml
+volumes:
+  # Media files (large, can be slow)
+  - ./media:/data/media
+  
+  # Thumbnails (moderate, flexible)
+  - /mnt/external-ssd:/data/thumbnails
+  
+  # Database (FAST, must be local!)
+  # Note: media-library-data handles database location
+  - media-library-data:/data
+
+environment:
+  # Configure file locations
+  - MEDIA_DIR=/data/media
+  - THUMB_DIR=/data/thumbnails
+  - DB_FILE=/data/media.db                   # Always on fast local storage
+```
+
+### Recommended Multi-Drive Setup
+
+For optimal performance with large media libraries:
+
+```bash
+# Slow + Large = Media files
+MEDIA_DIR=/mnt/large-hdd/media
+
+# Medium + Moderate = Thumbnails (optional external)
+THUMB_DIR=/mnt/fast-external-ssd/thumbnails
+
+# Fast + Reliable = Database (ALWAYS local)
+DB_FILE=/opt/media-library/media.db
+```
 
 ### Frontend Proxy Configuration
 

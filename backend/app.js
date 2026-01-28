@@ -13,6 +13,8 @@ import mime from "mime-types";
 import pdf from "pdf-poppler";
 import { fromPath } from 'pdf2pic';
 import dotenv from "dotenv";
+import PQueue from "p-queue";
+import debounce from "lodash.debounce";
 
 dotenv.config();
 
@@ -25,6 +27,15 @@ const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || "development";
 
 if (!fs.existsSync(THUMB_DIR_ABS)) fs.mkdirSync(THUMB_DIR_ABS, { recursive: true });
+
+// Thumbnail generation queue with concurrent limit (max 2 concurrent tasks)
+const thumbnailQueue = new PQueue({ 
+  concurrency: 2, 
+  interval: 1000,
+  intervalCap: 2,
+  carryoverConcurrencyCount: false,
+  timeout: 120000  // 2 minute timeout per task
+});
 
 const app = express();
 app.use(express.json());
@@ -126,41 +137,105 @@ async function generateThumbnail(filePath, type) {
   const hashName = Buffer.from(filePath).toString("base64") + ".jpg";
   const thumbPath = path.join(THUMB_DIR_ABS, hashName);
 
+  // Return existing thumbnail
   if (fs.existsSync(thumbPath)) return hashName;
   
   try {
     if (type === "image") {
-      await sharp(filePath).resize(200, 200, { fit: 'cover' }).toFile(thumbPath);
+      // Generate image thumbnail
+      await sharp(filePath)
+        .resize(200, 200, { fit: 'cover' })
+        .toFile(thumbPath);
     } else if (type === "video") {
+      // Generate video thumbnail with timeout (improved: use 0% for first frame, much faster)
       await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('FFmpeg timeout after 30 seconds'));
+        }, 30000); // 30 second timeout
+
         ffmpeg(filePath)
           .screenshots({
-            timestamps: ["50%"],
+            timestamps: ["0%"],  // First frame (much faster than 50%)
             filename: hashName,
             folder: THUMB_DIR_ABS,
             size: "200x?",
           })
-          .on("end", resolve)
-          .on("error", reject);
+          .on("end", () => {
+            clearTimeout(timeout);
+            resolve();
+          })
+          .on("error", (err) => {
+            clearTimeout(timeout);
+            reject(err);
+          });
       });
     } else if (type === "pdf") {
-      console.log("generating thumbnail for ", hashName, filePath);
-      const pdf2pic = fromPath(filePath, {
-        density: 100,
-        saveFilename: hashName,
-        savePath: THUMB_DIR_ABS,
-        format: 'jpg',
-        width: 200,
-        height: 200,
-      });
-      await pdf2pic(1); // first page
+      // Generate PDF thumbnail (requires Ghostscript on Windows)
+      try {
+        const pdf2pic = fromPath(filePath, {
+          density: 80,  // Reduced from 100 for faster processing
+          saveFilename: hashName,
+          savePath: THUMB_DIR_ABS,
+          format: 'jpg',
+          width: 200,
+          height: 200,
+        });
+        await pdf2pic(1); // First page only
+      } catch (pdfError) {
+        if (pdfError.message?.includes('Ghostscript')) {
+          console.warn(`[THUMBNAIL] Ghostscript not installed - skipping PDF thumbnail for: ${filePath}`);
+          console.warn(`[THUMBNAIL] On Windows, install Ghostscript: https://www.ghostscript.com/download/gsdnld.html`);
+          return null;
+        }
+        throw pdfError;
+      }
     } else {
       return null;
     }
+
+    // Verify thumbnail was created
+    if (!fs.existsSync(thumbPath)) {
+      console.warn(`[THUMBNAIL] Generation completed but file not found: ${filePath}`);
+      return null;
+    }
+
     return hashName;
-  } catch {
+  } catch (error) {
+    // Clean up failed/incomplete thumbnails
+    try {
+      if (fs.existsSync(thumbPath)) {
+        fs.unlinkSync(thumbPath);
+        console.log(`[THUMBNAIL] Cleaned up failed thumbnail: ${hashName}`);
+      }
+    } catch (cleanupError) {
+      console.warn(`[THUMBNAIL] Failed to cleanup: ${cleanupError.message}`);
+    }
+
+    // Log specific error types
+    const errorContext = {
+      filePath,
+      type,
+      errorType: error.code || error.message?.split('\n')[0] || 'Unknown',
+    };
+
+    if (error.message?.includes('ETIMEDOUT') || error.message?.includes('timeout')) {
+      console.warn(`[THUMBNAIL] Timeout processing ${type}: ${filePath}`);
+    } else if (error.code === 'ENOENT') {
+      console.warn(`[THUMBNAIL] File not found: ${filePath}`);
+    } else {
+      console.error(`[THUMBNAIL] Generation failed for ${type}:`, errorContext, error.message);
+    }
+
     return null;
   }
+}
+
+// Wrapper function to queue thumbnail generation with concurrent limit
+async function generateThumbnailQueued(filePath, type) {
+  return thumbnailQueue.add(
+    () => generateThumbnail(filePath, type),
+    { priority: 0 }
+  );
 }
 
 // --- INDEX FILE ---
@@ -174,7 +249,9 @@ async function indexFile(filePath) {
 
     const album = path.basename(path.dirname(absolutePath));
     const { type, duration } = await extractMetadata(absolutePath);
-    const thumbName = await generateThumbnail(absolutePath, type);
+    
+    // Use queued version to prevent concurrent overload
+    const thumbName = await generateThumbnailQueued(absolutePath, type);
 
     const resultMedia = await db.run(
       `INSERT OR REPLACE INTO media 
@@ -189,20 +266,49 @@ async function indexFile(filePath) {
 }
 
 // --- FILE WATCHER ---
-function watchFiles() {
+async function watchFiles() {
+  // Do initial scan of existing files
+  async function scanInitial() {
+    const scanDir = async (dir, depth = 0) => {
+      if (depth > 10) return;
+      const files = fs.readdirSync(dir);
+      for (const file of files) {
+        const filePath = path.join(dir, file);
+        if (filePath.startsWith(THUMB_DIR_ABS)) continue;
+        const stats = fs.statSync(filePath);
+        if (stats.isDirectory()) {
+          await scanDir(filePath, depth + 1);
+        } else {
+          await indexFile(filePath);
+        }
+      }
+    };
+    await scanDir(MEDIA_DIR_ABS);
+    console.log(`[SCAN] Initial scan complete`);
+  }
+
+  // Debounce file indexing to prevent duplicate processing during watcher events
+  const debouncedIndexFile = debounce(indexFile, 1000);
+
   const watcher = chokidar.watch(MEDIA_DIR_ABS, {
     persistent: true,
-    ignoreInitial: false,
+    ignoreInitial: true,  // Changed to true - we do initial scan manually above
     depth: 10,
     ignored: (watchPath) => watchPath.startsWith(THUMB_DIR_ABS),
   });
 
   watcher
-    .on("add", indexFile)
-    .on("change", indexFile)
+    .on("add", debouncedIndexFile)
+    .on("change", debouncedIndexFile)  // Wait 1s before re-indexing
     .on("unlink", async (filePath) => {
       await db.run("DELETE FROM media WHERE filePath = ?", filePath);
+      console.log(`[WATCHER] Removed: ${filePath}`);
     });
+
+  console.log(`[WATCHER] Watching: ${MEDIA_DIR_ABS}`);
+  
+  // Start initial scan
+  await scanInitial();
 }
 
 // --- API ROUTES ---
@@ -535,7 +641,7 @@ app.get("/search", async (req, res) => {
 // --- STARTUP ---
 (async () => {
   await initDB();
-  watchFiles();
+  await watchFiles();  // Wait for initial scan to complete
   app.listen(PORT, () => {
     console.log(`✅ Media library running at http://localhost:${PORT}`);
     console.log(`📁 Media directory: ${MEDIA_DIR}`);
