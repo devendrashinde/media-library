@@ -1,0 +1,293 @@
+<div class="gallery-container">
+  <!-- Left Sidebar for Albums -->
+  <div class="albums-sidebar" [class.mobile-open]="mobileMenuOpen">
+    <div class="sidebar-header">
+      <h3>📂 Albums</h3>
+      <button class="mobile-close" (click)="closeMobileMenu()">✖</button>
+    </div>
+    
+    <!-- Favorites Button -->
+    <button 
+      class="favorites-btn"
+      (click)="toggleFavorites()"
+      [class.active]="showFavoritesOnly">
+      ⭐ Favorites
+    </button>
+    
+    <!-- Album Search -->
+    <div class="album-search">
+      <div class="search-wrapper">
+        <input
+          type="text"
+          placeholder="🔍 Search albums..."
+          [(ngModel)]="albumSearchQuery"
+          class="album-search-input"
+        />
+        <button 
+          *ngIf="albumSearchQuery"
+          class="clear-btn"
+          (click)="clearAlbumSearch()"
+          title="Clear search">
+          ✖
+        </button>
+      </div>
+    </div>
+    
+    <div class="albums-list">
+      <button
+        *ngFor="let album of filteredAlbums"
+        (click)="selectAlbum(album)"
+        [class.active]="album === selectedAlbum && !showFavoritesOnly"
+      >
+        {{ album || 'Root' }}
+      </button>
+    </div>
+    <!-- Albums Pagination -->
+    <div class="albums-pagination">
+      <app-pagination
+        [total]="totalAlbums"
+        [page]="albumPage"
+        [limit]="limit"
+        (pageChange)="loadAlbums($event)">
+      </app-pagination>
+    </div>
+  </div>
+
+  <!-- Main Content Area -->
+  <div class="main-content">
+    <!-- Sticky Header -->
+    <div class="gallery-header">
+      <div class="header-row">
+        <div class="header-left">
+          <button class="mobile-menu-toggle" (click)="toggleMobileMenu()" title="Toggle menu">
+            {{ mobileMenuOpen ? '✖' : '☰' }}
+          </button>
+          <h2>📁 Gallery</h2>
+        </div>
+        
+        <div class="header-actions">
+          <!-- Dark Mode Toggle -->
+          <button class="theme-toggle" (click)="toggleDarkMode()" title="Toggle theme">
+            {{ darkMode ? '☀️' : '🌙' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Toolbar Toggle Button (Mobile Only) -->
+      <button class="toolbar-toggle" (click)="toggleToolbar()" title="Toggle filters and view options">
+        {{ toolbarOpen ? '🔽' : '▶' }}
+      </button>
+
+      <!-- Toolbar -->
+      <div class="toolbar" [class.collapsed]="!toolbarOpen">
+        <!-- Search -->
+        <div class="search-wrapper">
+          <input
+            type="text"
+            placeholder="Search... (ESC to clear)"
+            [(ngModel)]="query"
+            (input)="search()"
+            class="search-box"
+          />
+          <button 
+            *ngIf="query"
+            class="clear-btn"
+            (click)="clearSearch()"
+            title="Clear search">
+            ✖
+          </button>
+        </div>
+
+        <!-- Type Filter -->
+        <div class="type-filter">
+          <button 
+            (click)="setTypeFilter('')"
+            [class.active]="typeFilter === ''">
+            All
+          </button>
+          <button 
+            (click)="setTypeFilter('image')"
+            [class.active]="typeFilter === 'image'">
+            🖼️ Images
+          </button>
+          <button 
+            (click)="setTypeFilter('video')"
+            [class.active]="typeFilter === 'video'">
+            🎬 Videos
+          </button>
+          <button 
+            (click)="setTypeFilter('music')"
+            [class.active]="typeFilter === 'music'">
+            🎵 Music
+          </button>
+          <button 
+            (click)="setTypeFilter('pdf')"
+            [class.active]="typeFilter === 'pdf'">
+            📄 PDFs
+          </button>
+        </div>
+
+        <!-- Sort Controls -->
+        <div class="sort-controls">
+          <label>Sort:</label>
+          <button 
+            (click)="setSortBy('createdAt')"
+            [class.active]="sortBy === 'createdAt'">
+            Date {{ sortBy === 'createdAt' ? (sortOrder === 'asc' ? '↑' : '↓') : '' }}
+          </button>
+          <button 
+            (click)="setSortBy('filePath')"
+            [class.active]="sortBy === 'filePath'">
+            Name {{ sortBy === 'filePath' ? (sortOrder === 'asc' ? '↑' : '↓') : '' }}
+          </button>
+          <button 
+            (click)="setSortBy('fileSize')"
+            [class.active]="sortBy === 'fileSize'">
+            Size {{ sortBy === 'fileSize' ? (sortOrder === 'asc' ? '↑' : '↓') : '' }}
+          </button>
+        </div>
+
+        <!-- Grid Size Toggle -->
+        <div class="grid-size-controls">
+          <label>View:</label>
+          <button 
+            (click)="setGridSize('small')"
+            [class.active]="gridSize === 'small'"
+            title="Small grid">
+            ▢
+          </button>
+          <button 
+            (click)="setGridSize('medium')"
+            [class.active]="gridSize === 'medium'"
+            title="Medium grid">
+            ▣
+          </button>
+          <button 
+            (click)="setGridSize('large')"
+            [class.active]="gridSize === 'large'"
+            title="Large grid">
+            ◼
+          </button>
+        </div>
+      </div>
+
+      <!-- Error Message -->
+      <div *ngIf="error" class="error-message">
+        ⚠️ {{ error }}
+      </div>
+
+      <!-- Loading Indicator -->
+      <div *ngIf="loading" class="loading-indicator">
+        Loading...
+      </div>
+    </div>
+
+    <!-- Scrollable File Grid -->
+    <div class="gallery-wrapper">
+      <div class="files-scrollable" #filesScroll (scroll)="onFileScroll($event)">
+        
+        <!-- Empty State -->
+        <div *ngIf="!loading && !hasFiles" class="empty-state">
+          <div class="empty-icon">📭</div>
+          <h3>No files found</h3>
+          <p *ngIf="showFavoritesOnly">You haven't favorited any files yet.</p>
+          <p *ngIf="!showFavoritesOnly && query">Try a different search term.</p>
+          <p *ngIf="!showFavoritesOnly && !query && typeFilter">No {{ typeFilter }} files in this album.</p>
+          <p *ngIf="!showFavoritesOnly && !query && !typeFilter && selectedAlbum">This album is empty.</p>
+        </div>
+
+        <!-- Files -->
+        <div class="files" [class.grid-small]="gridSize === 'small'" 
+                          [class.grid-medium]="gridSize === 'medium'" 
+                          [class.grid-large]="gridSize === 'large'">
+          <div
+            *ngFor="let file of files"
+            class="file-card"
+          >
+            <div class="card">
+              <!-- Favorite Star -->
+              <button 
+                class="favorite-star" 
+                (click)="toggleFavorite(file, $event)"
+                [class.favorited]="file.isFavorite"
+                title="Toggle favorite">
+                {{ file.isFavorite ? '⭐' : '☆' }}
+              </button>
+
+              <ng-container [ngSwitch]="file.type">
+                <!-- Image -->
+                <img *ngSwitchCase="'image'"
+                    [src]="thumbnail(file)"
+                    alt="{{ file.filePath }}"
+                  (click)="openPlayer(file)" />
+                <!-- Music -->
+                <div *ngSwitchCase="'music'" class="music-icon" (click)="openPlayer(file)">
+                  🎵
+                </div>
+                <!-- Video -->
+                <img *ngSwitchCase="'video'"
+                      [src]="thumbnail(file)"
+                      alt="{{ file.filePath }}"
+                      (click)="openPlayer(file)"/>
+                <!-- PDF -->
+                <div *ngSwitchCase="'pdf'" class="pdf-card" (click)="openPlayer(file)">
+                  <img 
+                    *ngIf="file.thumbnailPath"
+                    [src]="thumbnail(file)"
+                    alt="{{ file.filePath }}"
+                    class="pdf-thumbnail" />
+                  <div class="pdf-overlay">
+                    <span class="pdf-icon">📄</span>
+                    <span class="pdf-label">PDF</span>
+                  </div>
+                </div>
+
+                <!-- Fallback -->
+                <div *ngSwitchDefault class="unknown-card">
+                  ❓ Unknown File
+                </div>
+              </ng-container>
+              <p class="file-info">{{ displayLabel(file) }}</p>
+              <p *ngIf="file.createdAt" class="file-info">📅 {{ file.createdAt | date:'short' }}</p>
+
+              <!-- Show tags -->
+              <div class="tags" *ngIf="file.tags?.length">
+                <span *ngFor="let tag of file.tags" class="tag">
+                  {{ tag }}
+                  <button class="tag-delete" (click)="removeTag(file, tag)" title="Remove tag">×</button>
+                </span>
+              </div>
+
+            </div>
+          </div>
+        </div>
+        <!-- Go to Top Button -->
+        <button class="go-top-btn" *ngIf="showGoTop" (click)="scrollFilesToTop(filesScroll)" title="Back to top">
+          ⬆️
+        </button>
+      </div>
+    </div>
+
+    <!-- Files Pagination -->
+    <app-pagination
+      [total]="totalFiles"
+      [page]="filePage"
+      [limit]="limit"
+      (pageChange)="loadFiles(selectedAlbum, $event)">
+    </app-pagination>
+  </div>
+</div>
+
+<!-- Player Modal -->
+<div class="player-modal" *ngIf="selectedFile">
+  <div class="modal-content">
+    <button class="close-btn" (click)="closePlayer()">✖</button>
+
+    <!-- Player Component -->
+    <app-player
+      [currentFile]="selectedFile"
+      [playlist]="playlistFiles"
+      (close)="closePlayer()">
+    </app-player>
+  </div>
+</div>

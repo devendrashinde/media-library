@@ -1,0 +1,110 @@
+<div class="player-modal" *ngIf="current">
+  <div class="player-container">
+    <div class="player-header">
+      <button class="close-btn" (click)="closePlayer()" title="Close (Esc)">✖</button>
+    </div>
+
+  <div class="player-body">
+    <video 
+      #videoPlayer
+      *ngIf="isMedia('video')" 
+      [src]="safeMediaUrl" 
+      controls 
+      autoplay 
+      (ended)="onEnded()">
+    </video>
+    <audio 
+      #audioPlayer
+      *ngIf="isMedia('music') || isMedia('audio')" 
+      [src]="safeMediaUrl" 
+      controls 
+      autoplay 
+      (ended)="onEnded()">
+    </audio>
+    <img *ngIf="isMedia('image')" [src]="safeMediaUrl" [alt]="current.filePath" />
+    <iframe *ngIf="isMedia('pdf')" [src]="safeMediaUrl" class="pdf-viewer"></iframe>
+  </div>
+
+  <div class="media-info">
+    <h3>{{ current.album || 'Media' }}</h3>
+    <div *ngIf="current.tags?.length; else noTagsInfo">
+      <span *ngFor="let tag of current.tags" class="media-tag">{{ tag }}</span>
+    </div>
+    <ng-template #noTagsInfo>
+      <p class="file-name">{{ getFileName(current) }}</p>
+    </ng-template>
+  </div>
+
+  <div class="player-controls">
+    <button (click)="prev()" [disabled]="currentIndex === 0" class="control-btn" title="Previous (Shift+←)">
+      ⬅️ Prev
+    </button>
+    
+    <div class="playlist-info">
+      <span class="track-counter">{{ currentIndex + 1 }} / {{ playlist.length }}</span>
+      <label class="autoplay-toggle" title="Auto-play next file">
+        <input type="checkbox" [(ngModel)]="autoPlayNext" (change)="toggleAutoPlay()">
+        <span>Auto-play</span>
+      </label>
+    </div>
+    
+    <button (click)="next()" [disabled]="currentIndex === playlist.length - 1" class="control-btn" title="Next (Shift+→)">
+      Next ➡️
+    </button>
+  </div>
+
+  <!-- Keyboard Shortcuts Help -->
+  <div class="keyboard-help">
+    <details>
+      <summary>⌨️ Keyboard Shortcuts</summary>
+      <ul>
+        <li><kbd>Space</kbd> - Play/Pause</li>
+        <li><kbd>←</kbd> / <kbd>→</kbd> - Seek -10s / +10s</li>
+        <li><kbd>Shift+←</kbd> / <kbd>Shift+→</kbd> - Previous / Next</li>
+        <li><kbd>↑</kbd> / <kbd>↓</kbd> - Volume Up / Down</li>
+        <li><kbd>F</kbd> - Fullscreen</li>
+        <li><kbd>Esc</kbd> - Close Player</li>
+      </ul>
+    </details>
+  </div>
+
+  <!-- Tag management -->
+  <div class="tag-section">
+    <h4>Tags</h4>
+
+    <!-- Display existing tags -->
+    <div *ngIf="current.tags?.length; else noTags">
+      <span *ngFor="let tag of current.tags" class="tag">
+        {{ tag }}
+        <button class="tag-delete" (click)="removeTag(tag)" title="Remove tag">×</button>
+      </span>
+    </div>
+
+    <ng-template #noTags>
+      <p class="no-tags">No tags yet</p>
+    </ng-template>
+
+    <!-- Add new tag -->
+    <div class="add-tag">
+      <input [(ngModel)]="newTag" placeholder="Add new tag..." />
+      <button (click)="addTag()">Add</button>
+    </div>
+  </div>
+
+  <div *ngIf="hasPlaylist()" class="playlist-section">
+    <h4>📋 Playlist ({{ playlist.length }} items)</h4>
+    <ul class="playlist" #playlistContainer>
+      <li *ngFor="let file of playlist; let i = index"
+          [class.active]="i === currentIndex"
+          (click)="selectFromPlaylist(i)"
+          #playlistItem>
+        <span class="playlist-icon">
+          {{ file.type === 'music' ? '🎵' : file.type === 'video' ? '🎬' : file.type === 'image' ? '🖼️' : '📄' }}
+        </span>
+        <span class="playlist-name">{{ getFileName(file) }}</span>
+        <span class="playlist-badge" *ngIf="i === currentIndex">▶️</span>
+      </li>
+    </ul>
+  </div>
+</div>
+</div>

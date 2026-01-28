@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  media-library:
+    build: .
+    container_name: media-library
+    ports:
+      - "3000:3000"  # Backend API
+      - "4200:4200"  # Frontend
+    volumes:
+      - ./media:/data/media              # Your media files
+      - media-library-data:/data         # Database and thumbnails
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - MEDIA_DIR=/data/media
+      - THUMB_DIR=/data/thumbnails
+      - DB_FILE=/data/media.db
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/albums"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  media-library-data:
+    driver: local
+
