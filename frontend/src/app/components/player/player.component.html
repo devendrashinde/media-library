@@ -21,7 +21,24 @@
       autoplay 
       (ended)="onEnded()">
     </audio>
-    <img *ngIf="isMedia('image')" [src]="safeMediaUrl" [alt]="current.filePath" />
+    <div *ngIf="isMedia('image')" class="image-container">
+      <div class="image-controls">
+        <button class="image-control-btn" (click)="zoomIn()" title="Zoom In (Ctrl++)">🔍+</button>
+        <button class="image-control-btn" (click)="zoomOut()" title="Zoom Out (Ctrl+-)">🔍-</button>
+        <button class="image-control-btn" (click)="resetZoom()" title="Reset Zoom">⟲ Reset</button>
+        <button class="image-control-btn" (click)="rotateLeft()" title="Rotate Left (←)">↻ Left</button>
+        <button class="image-control-btn" (click)="rotateRight()" title="Rotate Right (→)">↺ Right</button>
+      </div>
+      <img 
+        #imagePlayer
+        [src]="safeMediaUrl" 
+        [alt]="current.filePath" 
+        [style.transform]="getImageTransform()"
+        [class.dragging]="isDragging"
+        (wheel)="onImageWheel($event)"
+        (mousedown)="onImageMouseDown($event)"
+      />
+    </div>
     <iframe *ngIf="isMedia('pdf')" [src]="safeMediaUrl" class="pdf-viewer"></iframe>
   </div>
 

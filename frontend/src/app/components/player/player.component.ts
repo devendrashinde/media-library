@@ -17,11 +17,21 @@ export class PlayerComponent implements OnInit, OnDestroy {
   
   @ViewChild('videoPlayer') videoPlayer?: ElementRef<HTMLVideoElement>;
   @ViewChild('audioPlayer') audioPlayer?: ElementRef<HTMLAudioElement>;
+  @ViewChild('imagePlayer') imagePlayer?: ElementRef<HTMLImageElement>;
 
   currentIndex = 0;
   newTag = '';
   safeMediaUrl!: SafeResourceUrl;
   autoPlayNext = true;
+  
+  // Image zoom, rotate, and pan
+  imageZoom = 1;
+  imageRotation = 0;
+  panX = 0;
+  panY = 0;
+  isDragging = false;
+  dragStartX = 0;
+  dragStartY = 0;
   
   private destroy$ = new Subject<void>();
 
@@ -42,6 +52,38 @@ export class PlayerComponent implements OnInit, OnDestroy {
       return;
     }
 
+    // Handle image-specific shortcuts
+    if (this.isMedia('image')) {
+      if (event.ctrlKey || event.metaKey) {
+        if (event.key === '+' || event.key === '=') {
+          this.zoomIn();
+          event.preventDefault();
+          return;
+        } else if (event.key === '-') {
+          this.zoomOut();
+          event.preventDefault();
+          return;
+        } else if (event.key === '0') {
+          this.resetZoom();
+          event.preventDefault();
+          return;
+        }
+      }
+      
+      // For images, left/right without shift rotates instead of navigation
+      if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
+        if (event.key === 'ArrowRight') {
+          this.rotateRight();
+          event.preventDefault();
+          return;
+        } else if (event.key === 'ArrowLeft') {
+          this.rotateLeft();
+          event.preventDefault();
+          return;
+        }
+      }
+    }
+
     switch(event.key) {
       case 'Escape':
         this.closePlayer();
@@ -49,7 +91,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
       case 'ArrowRight':
         if (event.shiftKey) {
           this.next();
-        } else {
+        } else if (!this.isMedia('image')) {
           this.seekForward();
         }
         event.preventDefault();
@@ -57,7 +99,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
       case 'ArrowLeft':
         if (event.shiftKey) {
           this.prev();
-        } else {
+        } else if (!this.isMedia('image')) {
           this.seekBackward();
         }
         event.preventDefault();
@@ -230,4 +272,86 @@ export class PlayerComponent implements OnInit, OnDestroy {
     this.destroy$.next();
     this.destroy$.complete();
   }
-}
+
+  // Image zoom and rotate methods
+  zoomIn() {
+    this.imageZoom = Math.min(this.imageZoom + 0.25, 4);
+  }
+
+  zoomOut() {
+    this.imageZoom = Math.max(this.imageZoom - 0.25, 0.5);
+  }
+
+  resetZoom() {
+    this.imageZoom = 1;
+    this.imageRotation = 0;
+    this.panX = 0;
+    this.panY = 0;
+  }
+
+  rotateLeft() {
+    this.imageRotation = (this.imageRotation - 90) % 360;
+  }
+
+  rotateRight() {
+    this.imageRotation = (this.imageRotation + 90) % 360;
+  }
+
+  getImageTransform(): string {
+    return `translate(${this.panX}px, ${this.panY}px) scale(${this.imageZoom}) rotate(${this.imageRotation}deg)`;
+  }
+
+  onImageWheel(event: WheelEvent) {
+    if (event.ctrlKey) {
+      event.preventDefault();
+      if (event.deltaY < 0) {
+        this.zoomIn();
+      } else {
+        this.zoomOut();
+      }
+    }
+  }
+
+  onImageMouseDown(event: MouseEvent) {
+    if (this.imageZoom > 1) {
+      this.isDragging = true;
+      this.dragStartX = event.clientX - this.panX;
+      this.dragStartY = event.clientY - this.panY;
+      event.preventDefault();
+    }
+  }
+
+  @HostListener('window:mousemove', ['$event'])
+  onImageMouseMove(event: MouseEvent) {
+    if (!this.isDragging || this.imageZoom <= 1 || !this.imagePlayer) {
+      return;
+    }
+
+    const deltaX = event.clientX - this.dragStartX;
+    const deltaY = event.clientY - this.dragStartY;
+
+    // Get image and container dimensions
+    const img = this.imagePlayer.nativeElement;
+    const imgWidth = img.naturalWidth || img.width;
+    const imgHeight = img.naturalHeight || img.height;
+    const containerWidth = img.parentElement?.offsetWidth || window.innerWidth;
+    const containerHeight = img.parentElement?.offsetHeight || window.innerHeight;
+
+    // Calculate max pan based on zoomed image size
+    // The zoomed image is larger, so we can pan to show all of it
+    const scaledWidth = imgWidth * this.imageZoom;
+    const scaledHeight = imgHeight * this.imageZoom;
+
+    // Maximum pan is half the difference between zoomed and container size
+    const maxPanX = Math.max(0, (scaledWidth - containerWidth) / 2);
+    const maxPanY = Math.max(0, (scaledHeight - containerHeight) / 2);
+
+    // Clamp pan values to allow full view of zoomed image
+    this.panX = Math.max(-maxPanX, Math.min(maxPanX, deltaX));
+    this.panY = Math.max(-maxPanY, Math.min(maxPanY, deltaY));
+  }
+
+  @HostListener('window:mouseup')
+  onImageMouseUp() {
+    this.isDragging = false;
+  }}

@@ -18,10 +18,10 @@ param(
     [string]$PiUser = "osmc",
     
     [Parameter(Mandatory=$false)]
-    [string]$MediaDir = "/home/osmc/Videos",
+    [string]$MediaDir = "/home/osmc/Apps/photos/data",
     
     [Parameter(Mandatory=$false)]
-    [string]$ThumbDir = "",
+    [string]$ThumbDir = "/home/osmc/Apps/photos/thumbs",
     
     [Parameter(Mandatory=$false)]
     [string]$DbFile = "",
@@ -33,9 +33,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "╔════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║   Media Library - Windows to Pi Deployment            ║" -ForegroundColor Cyan
-Write-Host "╚════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host "   Media Library - Windows to Pi Deployment            " -ForegroundColor Cyan
+Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host ""
 
 # Interactive prompts if parameters not provided
@@ -63,13 +63,13 @@ Write-Host ""
 # Test SSH connection
 Write-Host "[1/6] Testing SSH connection to Raspberry Pi..." -ForegroundColor Blue
 try {
-    ssh -o ConnectTimeout=5 -o BatchMode=yes "$PiUser@$PiHost" "exit" 2>$null
+    ssh -o ConnectTimeout=5 -o BatchMode=yes "${PiUser}@${PiHost}" "exit" 2>$null
     if ($LASTEXITCODE -ne 0) {
         throw "SSH connection failed"
     }
-    Write-Host "✓ SSH connection successful" -ForegroundColor Green
+    Write-Host "[OK] SSH connection successful" -ForegroundColor Green
 } catch {
-    Write-Host "✗ Cannot connect to $PiUser@$PiHost" -ForegroundColor Red
+    Write-Host "[ERROR] Cannot connect to ${PiUser}@${PiHost}" -ForegroundColor Red
     Write-Host ""
     Write-Host "Please ensure:" -ForegroundColor Yellow
     Write-Host "  1. SSH is enabled on OSMC (via MyOSMC app)"
@@ -77,7 +77,7 @@ try {
     Write-Host "  3. The IP address/hostname is correct"
     Write-Host ""
     Write-Host "To set up SSH key authentication:" -ForegroundColor Yellow
-    Write-Host "  ssh-copy-id $PiUser@$PiHost"
+    Write-Host "  ssh-copy-id ${PiUser}@${PiHost}"
     exit 1
 }
 
@@ -91,10 +91,10 @@ if (-not (Test-Path "node_modules")) {
 }
 npm run build
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "✗ Frontend build failed" -ForegroundColor Red
+    Write-Host "[ERROR] Frontend build failed" -ForegroundColor Red
     exit 1
 }
-Write-Host "✓ Frontend built successfully" -ForegroundColor Green
+Write-Host "[OK] Frontend built successfully" -ForegroundColor Green
 
 # Create deployment package
 Write-Host ""
@@ -102,53 +102,151 @@ Write-Host "[3/6] Creating deployment package..." -ForegroundColor Blue
 Set-Location $PSScriptRoot
 
 $PackageName = "media-library-deploy.tar.gz"
-$FilesToInclude = @(
-    "backend",
-    "frontend/dist",
-    "package.json",
-    "deploy-osmc.sh"
-)
+$SkipPackageCreation = $false
 
-# Check if DeployType is docker and include docker files
-if ($DeployType -eq "docker") {
-    $FilesToInclude += "Dockerfile"
-    $FilesToInclude += "docker-compose.yml"
+# Check if package already exists
+if (Test-Path $PackageName) {
+    Write-Host "Package already exists: $PackageName" -ForegroundColor Yellow
+    $rebuild = Read-Host "Rebuild package? (y/n)"
+    if ($rebuild -ne 'y' -and $rebuild -ne 'Y') {
+        Write-Host "[OK] Using existing package" -ForegroundColor Green
+        $SkipPackageCreation = $true
+    } else {
+        Write-Host "Rebuilding package..." -ForegroundColor Yellow
+    }
 }
 
-# Create tar.gz (requires tar.exe which is built into Windows 10/11)
-tar -czf $PackageName $FilesToInclude 2>$null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "✗ Failed to create package" -ForegroundColor Red
+if (-not $SkipPackageCreation) {
+    # Verify required directories exist
+    if (-not (Test-Path "backend")) {
+    Write-Host "[ERROR] backend directory not found" -ForegroundColor Red
     exit 1
 }
-Write-Host "✓ Package created: $PackageName" -ForegroundColor Green
+
+if (-not (Test-Path "frontend/dist")) {
+    Write-Host "[WARNING] frontend/dist not found - building frontend again..." -ForegroundColor Yellow
+    Set-Location "$PSScriptRoot\frontend"
+    npm run build
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] Frontend build failed" -ForegroundColor Red
+        exit 1
+    }
+    Set-Location $PSScriptRoot
+}
+
+# Check if required files exist
+$requiredFiles = @("deploy-osmc.sh")
+foreach ($file in $requiredFiles) {
+    if (-not (Test-Path $file)) {
+        Write-Host "[ERROR] $file not found" -ForegroundColor Red
+        exit 1
+    }
+}
+
+Write-Host "Creating archive..." -ForegroundColor Yellow
+
+# Create a temporary directory for packaging
+$tempDir = Join-Path $env:TEMP "media-library-deploy-temp"
+if (Test-Path $tempDir) {
+    Remove-Item $tempDir -Recurse -Force
+}
+New-Item -ItemType Directory -Path $tempDir | Out-Null
+
+# Copy files, excluding node_modules, media, thumbnails
+Write-Host "Copying files (excluding node_modules, media, thumbnails)..." -ForegroundColor Yellow
+
+# Copy backend (excluding certain directories)
+New-Item -ItemType Directory -Path "$tempDir\backend" -Force | Out-Null
+Get-ChildItem "backend" -Directory | Where-Object { $_.Name -notin @('node_modules', 'media', 'thumbnails') } | ForEach-Object {
+    Copy-Item $_.FullName -Destination "$tempDir\backend\$($_.Name)" -Recurse -Force
+}
+Get-ChildItem "backend" -File | Where-Object { $_.Extension -ne '.db' } | ForEach-Object {
+    Copy-Item $_.FullName -Destination "$tempDir\backend\" -Force
+}
+
+# Copy pre-built frontend dist if it exists (so Pi doesn't have to rebuild)
+# Note: We exclude the frontend source directory as it's not needed for deployment
+if (Test-Path "frontend\dist") {
+    Copy-Item "frontend\dist" -Destination "$tempDir\frontend-dist" -Recurse -Force
+    Write-Host "Included pre-built frontend from frontend/dist" -ForegroundColor Green
+}
+
+# Copy deployment script
+Copy-Item "deploy-osmc.sh" -Destination "$tempDir\"
+
+# Include root package.json if it exists
+if (Test-Path "package.json") {
+    Copy-Item "package.json" -Destination "$tempDir\"
+}
+
+# Add docker files if docker deployment
+if ($DeployType -eq "docker") {
+    if (Test-Path "Dockerfile") { Copy-Item "Dockerfile" -Destination "$tempDir\" }
+    if (Test-Path "docker-compose.yml") { Copy-Item "docker-compose.yml" -Destination "$tempDir\" }
+}
+
+# Compress from temp directory using tar
+Write-Host "Compressing archive..." -ForegroundColor Yellow
+Set-Location $tempDir
+tar -czf "$PSScriptRoot\$PackageName" *
+Set-Location $PSScriptRoot
+
+# Cleanup temp directory
+Remove-Item $tempDir -Recurse -Force
+
+    if (-not (Test-Path $PackageName)) {
+        Write-Host "[ERROR] Failed to create ZIP package" -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host "[OK] Package created: $PackageName" -ForegroundColor Green
+}
 
 # Transfer to Raspberry Pi
 Write-Host ""
 Write-Host "[4/6] Transferring files to Raspberry Pi..." -ForegroundColor Blue
-scp $PackageName "$PiUser@$PiHost:/home/$PiUser/"
+scp $PackageName "${PiUser}@${PiHost}:/home/${PiUser}/"
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "✗ File transfer failed" -ForegroundColor Red
+    Write-Host "[ERROR] File transfer failed" -ForegroundColor Red
     exit 1
 }
-Write-Host "✓ Files transferred successfully" -ForegroundColor Green
+Write-Host "[OK] Files transferred successfully" -ForegroundColor Green
 
 # Extract and prepare on Raspberry Pi
 Write-Host ""
 Write-Host "[5/6] Extracting files on Raspberry Pi..." -ForegroundColor Blue
-ssh "$PiUser@$PiHost" @"
-    cd /home/$PiUser
-    mkdir -p media-library
-    tar -xzf $PackageName -C media-library
-    cd media-library
-    chmod +x deploy-osmc.sh
-    echo 'Files extracted successfully'
-"@
+
+# Remove old directory if exists
+ssh "${PiUser}@${PiHost}" "rm -rf /home/${PiUser}/media-library"
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "✗ Extraction failed" -ForegroundColor Red
+    Write-Host "[WARNING] Could not remove old directory" -ForegroundColor Yellow
+}
+
+# Create fresh directory
+ssh "${PiUser}@${PiHost}" "mkdir -p /home/${PiUser}/media-library"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] Failed to create directory" -ForegroundColor Red
     exit 1
 }
-Write-Host "✓ Files extracted on Raspberry Pi" -ForegroundColor Green
+
+# Extract tar.gz - tar extracts the structure directly
+ssh "${PiUser}@${PiHost}" "cd /home/${PiUser}/media-library && tar -xzf ../$PackageName"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] Extraction failed" -ForegroundColor Red
+    exit 1
+}
+
+# Verify extracted structure
+ssh "${PiUser}@${PiHost}" "ls -la /home/${PiUser}/media-library/"
+
+# Make deploy script executable
+ssh "${PiUser}@${PiHost}" "chmod +x /home/${PiUser}/media-library/deploy-osmc.sh"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] Failed to set permissions" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "[OK] Files extracted on Raspberry Pi" -ForegroundColor Green
 
 # Run deployment script on Raspberry Pi
 Write-Host ""
@@ -156,18 +254,18 @@ Write-Host "[6/6] Running deployment on Raspberry Pi..." -ForegroundColor Blue
 Write-Host "This may take a few minutes..." -ForegroundColor Yellow
 Write-Host ""
 
-ssh -t "$PiUser@$PiHost" "cd /home/$PiUser/media-library && ./deploy-osmc.sh $MediaDir $ThumbDir $DbFile $DeployType"
+ssh -t "${PiUser}@${PiHost}" "cd /home/${PiUser}/media-library; ./deploy-osmc.sh $MediaDir $ThumbDir $DbFile $DeployType"
 
 Write-Host ""
-Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Green
+Write-Host "==========================================================" -ForegroundColor Green
 Write-Host "          Deployment Complete!" -ForegroundColor Green
-Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Green
+Write-Host "==========================================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Access your Media Library at:" -ForegroundColor Cyan
 Write-Host "  http://${PiHost}:4200" -ForegroundColor White
 Write-Host ""
 Write-Host "To check service status:" -ForegroundColor Yellow
-Write-Host "  ssh $PiUser@$PiHost 'sudo systemctl status media-library'" -ForegroundColor White
+Write-Host "  ssh ${PiUser}@${PiHost} 'sudo systemctl status media-library'" -ForegroundColor White
 Write-Host ""
 
 # Cleanup

@@ -13,6 +13,9 @@ import { of } from 'rxjs';
 export class GalleryComponent implements OnInit, OnDestroy {
   albums: string[] = [];
   selectedAlbum: string = '';
+  currentAlbumPath: string = ''; // Track current path in hierarchy
+  albumHierarchy: string[] = []; // Breadcrumb trail
+  subdirs: any[] = []; // Subdirectories of current album
   files: MediaFile[] = [];
   playlistFiles: MediaFile[] = [];
   selectedIndex: number | null = null;
@@ -44,6 +47,8 @@ export class GalleryComponent implements OnInit, OnDestroy {
   mobileMenuOpen: boolean = false;
   toolbarOpen: boolean = true;
   albumSearchQuery: string = '';
+  albumScanning: boolean = false;
+  albumsRefreshing: boolean = false;
   
   private destroy$ = new Subject<void>();
 
@@ -107,6 +112,17 @@ export class GalleryComponent implements OnInit, OnDestroy {
     this.albumSearchQuery = '';
   }
 
+  refreshAlbums() {
+    this.albumsRefreshing = true;
+    this.albumPage = 1;
+    this.loadAlbums(1);
+    
+    // Stop showing refresh state after 1 second
+    setTimeout(() => {
+      this.albumsRefreshing = false;
+    }, 1000);
+  }
+
   loadAllTags() {
     this.mediaService.getAllTags()
       .pipe(
@@ -168,9 +184,64 @@ export class GalleryComponent implements OnInit, OnDestroy {
 
   selectAlbum(album: string) {
     this.selectedAlbum = album;
+    this.currentAlbumPath = album;
     this.showFavoritesOnly = false;
     this.closeMobileMenu();
-    this.loadFiles(album);
+    this.albumScanning = true;
+    
+    // Update hierarchy breadcrumb
+    this.albumHierarchy = album ? album.split('/') : [];
+    
+    // Load subdirectories first
+    this.mediaService.getAlbumSubdirs(album)
+      .pipe(
+        takeUntil(this.destroy$),
+        catchError(err => {
+          console.warn('Failed to load subdirectories:', err);
+          return of({ subdirs: [] });
+        })
+      )
+      .subscribe(res => {
+        this.subdirs = res.subdirs || [];
+      });
+    
+    // Trigger scan for this album
+    this.mediaService.scanAlbum(album)
+      .pipe(
+        takeUntil(this.destroy$),
+        catchError(err => {
+          console.warn('Album scan triggered but may already be scanning:', err);
+          this.albumScanning = false;
+          return of(null);
+        })
+      )
+      .subscribe(() => {
+        this.albumScanning = false;
+        // Load files after scan is triggered
+        // Files will load progressively as they're scanned
+        this.loadFiles(album);
+      });
+  }
+
+  navigateToParent() {
+    if (this.albumHierarchy.length <= 1) {
+      // Go back to root albums list
+      this.currentAlbumPath = '';
+      this.selectedAlbum = '';
+      this.albumHierarchy = [];
+      this.subdirs = [];
+      this.files = [];
+      this.loadAlbums();
+    } else {
+      // Go up one level
+      this.albumHierarchy.pop();
+      const parentPath = this.albumHierarchy.join('/');
+      this.selectAlbum(parentPath);
+    }
+  }
+
+  selectSubdir(subdir: any) {
+    this.selectAlbum(subdir.path);
   }
 
   loadFiles(album?: string, page: number = 1) {

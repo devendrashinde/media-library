@@ -28,6 +28,11 @@ export class MediaService {
     return this.http.get<string[]>(`${this.API_URL}/albums?page=${page}&limit=${limit}`);
   }
 
+  // Get subdirectories of a specific album
+  getAlbumSubdirs(albumPath: string): Observable<any> {
+    return this.http.get(`${this.API_URL}/albums/subdirs/${encodeURIComponent(albumPath)}`);
+  }
+
   getFiles(album?: string, page: number = 1, limit: number = 50, type?: string, sortBy?: string, sortOrder?: string): Observable<any> {
     let url = `${this.API_URL}/files?page=${page}&limit=${limit}`
     if (album) url += `&album=${album}`;
@@ -71,6 +76,21 @@ export class MediaService {
 
   getAllTags(): Observable<any> {
     return this.http.get(`${this.API_URL}/tags`);
+  }
+
+  // Scan endpoint to trigger initial album discovery
+  startInitialScan(): Observable<any> {
+    return this.http.post(`${this.API_URL}/scan`, {});
+  }
+
+  // Scan a specific album on-demand
+  scanAlbum(albumName: string): Observable<any> {
+    return this.http.post(`${this.API_URL}/scan/album/${encodeURIComponent(albumName)}`, {});
+  }
+
+  // Get scan progress status
+  getScanStatus(): Observable<any> {
+    return this.http.get(`${this.API_URL}/scan/status`);
   }
 
 }

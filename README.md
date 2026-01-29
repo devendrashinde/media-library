@@ -170,28 +170,28 @@ For production configuration and optimizations, see [PRODUCTION_CONFIG.md](PRODU
 ## 📖 API Documentation
 
 ### Albums
-- `GET /albums?page=1&limit=50&search=query` - Get paginated albums
-- `GET /albums/:album?page=1&limit=50&type=image&sortBy=createdAt&order=desc` - Get files in album
+- `GET /albums?page=1&limit=50` - Get paginated albums
+- `GET /files?album=...&page=1&limit=50&type=image&sortBy=createdAt&sortOrder=desc` - Get files in album
+
+### Scan Management (NEW)
+- `POST /scan` - Trigger manual media library scan
+- `GET /scan/status` - Get current scan progress and status
 
 ### Search
-- `GET /search?q=query&page=1&limit=50` - Search across all media
+- `GET /search?q=query` - Search across all media
 
 ### Media Operations
-- `GET /media/:id` - Stream media file
-- `POST /media/:id/favorite` - Toggle favorite status
-- `PUT /media/:id/tags` - Update media tags
-- `DELETE /media/:id` - Delete media file
+- `GET /media/:id` - Stream media file (with Range support)
+- `GET /files/:id` - Get file details with tags
+- `POST /files/:id/favorite` - Toggle favorite status
+- `POST /files/:id/tags` - Add tag to file
+- `DELETE /files/:id/tags/:tagName` - Remove tag from file
 
 ### Tags
 - `GET /tags` - Get all tags
-- `POST /tags` - Create new tag
 
-### Playlists
-- `GET /playlists` - Get all playlists
-- `POST /playlists` - Create playlist
-- `GET /playlists/:id/items` - Get playlist items
-- `POST /playlists/:id/items` - Add item to playlist
-- `DELETE /playlists/:id/items/:mediaId` - Remove item from playlist
+### Favorites
+- `GET /favorites?page=1&limit=50` - Get all favorite files
 
 ## 🔧 Configuration
 

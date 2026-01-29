@@ -3,6 +3,13 @@
   <div class="albums-sidebar" [class.mobile-open]="mobileMenuOpen">
     <div class="sidebar-header">
       <h3>📂 Albums</h3>
+      <button 
+        class="refresh-albums-btn"
+        (click)="refreshAlbums()"
+        [disabled]="albumsRefreshing"
+        title="Refresh albums list">
+        🔄
+      </button>
       <button class="mobile-close" (click)="closeMobileMenu()">✖</button>
     </div>
     
@@ -29,6 +36,32 @@
           (click)="clearAlbumSearch()"
           title="Clear search">
           ✖
+        </button>
+      </div>
+    </div>
+
+    <!-- Breadcrumb Navigation -->
+    <div *ngIf="albumHierarchy.length > 0" class="album-breadcrumb">
+      <button class="breadcrumb-btn" (click)="navigateToParent()" title="Go back">
+        ⬅️ Back
+      </button>
+      <div class="breadcrumb-path">
+        <span *ngFor="let part of albumHierarchy; let i = index">
+          <span *ngIf="i > 0"> / </span>
+          <span class="breadcrumb-part">{{ part }}</span>
+        </span>
+      </div>
+    </div>
+
+    <!-- Subdirectories (Sub-albums) -->
+    <div *ngIf="subdirs.length > 0" class="subdirs-section">
+      <h4 class="subdirs-header">📁 Sub-albums</h4>
+      <div class="subdirs-list">
+        <button
+          *ngFor="let subdir of subdirs"
+          (click)="selectSubdir(subdir)"
+          class="subdir-btn">
+          📂 {{ subdir.name }}
         </button>
       </div>
     </div>
@@ -174,6 +207,11 @@
       <!-- Error Message -->
       <div *ngIf="error" class="error-message">
         ⚠️ {{ error }}
+      </div>
+
+      <!-- Album Scanning Indicator -->
+      <div *ngIf="albumScanning" class="scanning-indicator">
+        ⏳ Scanning album and indexing files...
       </div>
 
       <!-- Loading Indicator -->

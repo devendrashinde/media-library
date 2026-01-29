@@ -10,7 +10,6 @@ import sharp from "sharp";
 import ffmpeg from "fluent-ffmpeg";
 import { parseFile } from "music-metadata";
 import mime from "mime-types";
-import pdf from "pdf-poppler";
 import { fromPath } from 'pdf2pic';
 import dotenv from "dotenv";
 import PQueue from "p-queue";
@@ -26,7 +25,15 @@ const DB_FILE = process.env.DB_FILE || "media.db";
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || "development";
 
+// For large media libraries, disable auto-scan on startup to make app start fast
+const AUTO_SCAN_ON_STARTUP = process.env.AUTO_SCAN_ON_STARTUP !== "false";
+const SCAN_BATCH_SIZE = parseInt(process.env.SCAN_BATCH_SIZE || "50");
+const SCAN_DELAY_MS = parseInt(process.env.SCAN_DELAY_MS || "0"); // Delay between batches in ms
+
 if (!fs.existsSync(THUMB_DIR_ABS)) fs.mkdirSync(THUMB_DIR_ABS, { recursive: true });
+
+let isScanning = false;
+let scanProgress = { total: 0, processed: 0, status: 'idle' };
 
 // Thumbnail generation queue with concurrent limit (max 2 concurrent tasks)
 const thumbnailQueue = new PQueue({ 
@@ -247,7 +254,9 @@ async function indexFile(filePath) {
     const stats = fs.statSync(absolutePath);
     if (stats.isDirectory()) return;
 
-    const album = path.basename(path.dirname(absolutePath));
+    // Get album path relative to MEDIA_DIR (e.g., "pictures/2003-Jan")
+    const relativeDir = path.relative(MEDIA_DIR_ABS, path.dirname(absolutePath));
+    const album = relativeDir.replace(/\\/g, '/'); // Use forward slashes for consistency
     const { type, duration } = await extractMetadata(absolutePath);
     
     // Use queued version to prevent concurrent overload
@@ -267,24 +276,157 @@ async function indexFile(filePath) {
 
 // --- FILE WATCHER ---
 async function watchFiles() {
-  // Do initial scan of existing files
+  // Ensure media directory exists
+  if (!fs.existsSync(MEDIA_DIR_ABS)) {
+    console.log(`[SCAN] Creating media directory: ${MEDIA_DIR_ABS}`);
+    fs.mkdirSync(MEDIA_DIR_ABS, { recursive: true });
+  }
+
+  // Scan only first-level directories (albums) - fast initial scan
   async function scanInitial() {
-    const scanDir = async (dir, depth = 0) => {
-      if (depth > 10) return;
-      const files = fs.readdirSync(dir);
+    if (isScanning) {
+      console.log(`[SCAN] Scan already in progress, skipping...`);
+      return;
+    }
+
+    isScanning = true;
+    scanProgress = { total: 0, processed: 0, status: 'scanning', startTime: Date.now() };
+    
+    if (!fs.existsSync(MEDIA_DIR_ABS)) {
+      console.log(`[SCAN] Creating media directory: ${MEDIA_DIR_ABS}`);
+      fs.mkdirSync(MEDIA_DIR_ABS, { recursive: true });
+    }
+
+    console.log(`[SCAN] Scanning first-level albums and updating database...`);
+    
+    try {
+      const files = fs.readdirSync(MEDIA_DIR_ABS);
+      let albumCount = 0;
+      
       for (const file of files) {
-        const filePath = path.join(dir, file);
+        const filePath = path.join(MEDIA_DIR_ABS, file);
         if (filePath.startsWith(THUMB_DIR_ABS)) continue;
-        const stats = fs.statSync(filePath);
-        if (stats.isDirectory()) {
-          await scanDir(filePath, depth + 1);
-        } else {
-          await indexFile(filePath);
+        
+        try {
+          const stats = fs.statSync(filePath);
+          if (stats.isDirectory()) {
+            albumCount++;
+            scanProgress.total++;
+            scanProgress.processed++;
+            
+            // Insert album into database so /albums query returns it
+            // Using a unique virtual ID path (without creating actual files)
+            const albumVirtualPath = `[ALBUM]/${file}`;
+            await db.run(
+              `INSERT OR IGNORE INTO media 
+                (filePath, album, type, thumbnailPath, fileSize, createdAt, lastModified) 
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              [albumVirtualPath, file, 'album', null, 0, new Date().toISOString(), Date.now()]
+            );
+            
+            console.log(`[SCAN] Found album: ${file}`);
+          }
+        } catch (err) {
+          console.warn(`[SCAN] Error scanning ${filePath}:`, err.code);
         }
       }
+      
+      const elapsed = ((Date.now() - scanProgress.startTime) / 1000).toFixed(1);
+      console.log(`[SCAN] Initial scan complete - found ${albumCount} albums in ${elapsed}s`);
+      console.log(`[SCAN] Use POST /scan/album/{albumName} to scan individual albums as needed`);
+      
+      scanProgress.status = 'complete';
+      isScanning = false;
+    } catch (err) {
+      console.error(`[SCAN] Initial scan error:`, err.message);
+      scanProgress.status = 'error';
+      scanProgress.error = err.message;
+      isScanning = false;
+    }
+  }
+
+  // Scan a specific album (called on-demand when user accesses it)
+  async function scanAlbum(albumPath) {
+    const albumName = path.basename(albumPath);
+    
+    if (!fs.existsSync(albumPath)) {
+      console.warn(`[SCAN] Album directory not found: ${albumPath}`);
+      return 0;
+    }
+
+    console.log(`[SCAN] Scanning album: ${albumName}`);
+    console.log(`[SCAN] Album path: ${albumPath}`);
+    
+    let fileCount = 0;
+    let batch = [];
+
+    const processBatch = async () => {
+      if (batch.length === 0) return;
+      const currentBatch = batch;
+      batch = [];
+      
+      for (const filePath of currentBatch) {
+        try {
+          await indexFile(filePath);
+          fileCount++;
+          
+          if (fileCount % 10 === 0) {
+            console.log(`[SCAN] Album ${albumName}: indexed ${fileCount} files...`);
+          }
+        } catch (err) {
+          console.error(`[SCAN] Error indexing ${filePath}:`, err.message);
+        }
+      }
+
+      if (SCAN_DELAY_MS > 0) {
+        await new Promise(resolve => setTimeout(resolve, SCAN_DELAY_MS));
+      }
     };
-    await scanDir(MEDIA_DIR_ABS);
-    console.log(`[SCAN] Initial scan complete`);
+
+    const scanDir = async (dir, depth = 0) => {
+      if (depth > 10) return;
+      
+      console.log(`[SCAN] Scanning directory (depth ${depth}): ${dir}`);
+      
+      try {
+        const files = fs.readdirSync(dir);
+        console.log(`[SCAN] Found ${files.length} items in ${dir}`);
+        
+        for (const file of files) {
+          const filePath = path.join(dir, file);
+          if (filePath.startsWith(THUMB_DIR_ABS)) continue;
+          
+          try {
+            const stats = fs.statSync(filePath);
+            if (stats.isDirectory()) {
+              console.log(`[SCAN] Found subdirectory: ${file}`);
+              await scanDir(filePath, depth + 1);
+            } else if (stats.isFile()) {
+              batch.push(filePath);
+              
+              if (batch.length >= SCAN_BATCH_SIZE) {
+                await processBatch();
+              }
+            }
+          } catch (err) {
+            if (err.code !== 'ENOENT' && err.code !== 'EACCES') {
+              console.warn(`[SCAN] Error scanning ${filePath}:`, err.code);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn(`[SCAN] Error reading directory ${dir}:`, err.message);
+      }
+    };
+
+    const startTime = Date.now();
+    await scanDir(albumPath);
+    await processBatch();
+    
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`[SCAN] Album scan complete: ${albumName} - indexed ${fileCount} files in ${elapsed}s`);
+    
+    return fileCount;
   }
 
   // Debounce file indexing to prevent duplicate processing during watcher events
@@ -292,26 +434,148 @@ async function watchFiles() {
 
   const watcher = chokidar.watch(MEDIA_DIR_ABS, {
     persistent: true,
-    ignoreInitial: true,  // Changed to true - we do initial scan manually above
+    ignoreInitial: true,
     depth: 10,
     ignored: (watchPath) => watchPath.startsWith(THUMB_DIR_ABS),
+    // For large media libraries, use polling instead of inotify to avoid system limits
+    // usePolling: true,
+    // Poll interval in milliseconds (check for changes every 2 seconds)
+    interval: 2000,
+    // Stabilization time - wait this long before processing file events
+    awaitWriteFinish: {
+      stabilityThreshold: 2000,
+      pollInterval: 100
+    },
+    // Limit the number of concurrent read operations
+    alwaysStat: false,
+    // Ignore .DS_Store, Thumbs.db, and other system files
+    ignoreInitial: true,
+    cwd: MEDIA_DIR_ABS,
+    maxListeners: 100
   });
 
   watcher
     .on("add", debouncedIndexFile)
-    .on("change", debouncedIndexFile)  // Wait 1s before re-indexing
+    .on("change", debouncedIndexFile)
     .on("unlink", async (filePath) => {
       await db.run("DELETE FROM media WHERE filePath = ?", filePath);
       console.log(`[WATCHER] Removed: ${filePath}`);
+    })
+    .on("error", (err) => {
+      if (err.code === "ENOSPC") {
+        console.error(`[WATCHER] System file watcher limit reached (ENOSPC)`);
+        console.error(`[WATCHER] To fix this, increase the inotify limit:`);
+        console.error(`[WATCHER]   sudo sysctl -w fs.inotify.max_user_watches=524288`);
+        console.error(`[WATCHER] To make permanent, edit /etc/sysctl.conf`);
+      } else {
+        console.error(`[WATCHER] Error:`, err);
+      }
     });
 
   console.log(`[WATCHER] Watching: ${MEDIA_DIR_ABS}`);
   
-  // Start initial scan
-  await scanInitial();
+  // Return scan functions for manual triggering via API
+  return { scanInitial, scanAlbum };
 }
 
 // --- API ROUTES ---
+
+// Trigger manual scan
+app.post('/scan', async (req, res) => {
+  if (isScanning) {
+    return res.status(409).json({ 
+      error: 'Scan already in progress',
+      progress: scanProgress 
+    });
+  }
+
+  // Run scan in background
+  watchFiles.scanInitial().catch(err => {
+    console.error('[SCAN] Error during manual scan:', err);
+    scanProgress.status = 'error';
+    scanProgress.error = err.message;
+    isScanning = false;
+  });
+
+  res.json({ 
+    message: 'Scan started',
+    note: 'Check /scan/status for progress' 
+  });
+});
+
+// Get scan progress
+app.get('/scan/status', async (req, res) => {
+  const dbStats = await db.get('SELECT COUNT(*) as total FROM media');
+  
+  res.json({
+    scanning: isScanning,
+    progress: scanProgress,
+    database: {
+      totalIndexed: dbStats.total
+    }
+  });
+});
+
+// Scan a specific album on-demand
+app.post('/scan/album/:albumName', async (req, res) => {
+  try {
+    const albumName = decodeURIComponent(req.params.albumName);
+    const albumPath = path.join(MEDIA_DIR_ABS, albumName);
+    
+    console.log(`[SCAN] Scanning album: ${albumName}`);
+    console.log(`[SCAN] Album path: ${albumPath}`);
+    console.log(`[SCAN] Media dir: ${MEDIA_DIR_ABS}`);
+    
+    // Verify album path is within media directory (prevent directory traversal)
+    if (!path.resolve(albumPath).startsWith(path.resolve(MEDIA_DIR_ABS))) {
+      console.error(`[SCAN] Invalid album path (security): ${albumPath}`);
+      return res.status(400).json({ error: 'Invalid album path' });
+    }
+
+    if (!fs.existsSync(albumPath)) {
+      console.error(`[SCAN] Album directory not found: ${albumPath}`);
+      console.error(`[SCAN] Directory exists check failed. Available directories in ${MEDIA_DIR_ABS}:`);
+      try {
+        const dirs = fs.readdirSync(MEDIA_DIR_ABS).filter(item => {
+          const itemPath = path.join(MEDIA_DIR_ABS, item);
+          return fs.statSync(itemPath).isDirectory();
+        });
+        console.error(`[SCAN] Available: ${dirs.join(', ')}`);
+      } catch (e) {
+        console.error(`[SCAN] Could not list directories: ${e.message}`);
+      }
+      return res.status(404).json({ 
+        error: 'Album directory not found',
+        path: albumName,
+        fullPath: albumPath,
+        mediaDir: MEDIA_DIR_ABS
+      });
+    }
+
+    const stats = fs.statSync(albumPath);
+    if (!stats.isDirectory()) {
+      console.error(`[SCAN] Path is not a directory: ${albumPath}`);
+      return res.status(400).json({ error: 'Album path must be a directory' });
+    }
+
+    console.log(`[SCAN] Starting scan for: ${albumName}`);
+    
+    // Run scan in background
+    watchFiles.scanAlbum(albumPath)
+      .catch(err => {
+        console.error(`[SCAN] Error scanning album ${albumName}:`, err);
+      });
+
+    res.json({ 
+      message: `Scanning album: ${albumName}`,
+      note: 'Check /scan/status for overall progress'
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to scan album', details: err.message });
+  }
+});
+
 
 // Helper: Validate pagination params
 function validatePagination(page, limit) {
@@ -333,10 +597,12 @@ app.get('/albums', async (req, res) => {
   try {
     const { page: p, limit: l } = validatePagination(req.query.page, req.query.limit);
     const offset = (p - 1) * l;
+    const parentPath = req.query.parent || ''; // Parent album path (e.g., "Photos/2024")
 
-    const total = await db.get('SELECT COUNT(DISTINCT album) as count FROM media');
+    // Only get top-level albums (no "/" in album name) to avoid showing entire hierarchy
+    const total = await db.get("SELECT COUNT(DISTINCT album) as count FROM media WHERE album NOT LIKE '%/%'");
     const albums = await db.all(
-      'SELECT DISTINCT album FROM media LIMIT ? OFFSET ?',
+      "SELECT DISTINCT album FROM media WHERE album NOT LIKE '%/%' LIMIT ? OFFSET ?",
       [l, offset]
     );
 
@@ -349,6 +615,56 @@ app.get('/albums', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch albums' });
+  }
+});
+
+// Get subdirectories of an album (filesystem based)
+app.get('/albums/subdirs/:albumPath', async (req, res) => {
+  try {
+    const albumPath = decodeURIComponent(req.params.albumPath);
+    const fullPath = path.join(MEDIA_DIR_ABS, albumPath);
+    
+    // Verify path is within media directory
+    if (!path.resolve(fullPath).startsWith(path.resolve(MEDIA_DIR_ABS))) {
+      return res.status(400).json({ error: 'Invalid album path' });
+    }
+
+    // Return empty subdirs if directory doesn't exist or isn't accessible
+    if (!fs.existsSync(fullPath)) {
+      return res.json({ subdirs: [] });
+    }
+
+    const stats = fs.statSync(fullPath);
+    if (!stats.isDirectory()) {
+      return res.json({ subdirs: [] });
+    }
+
+    // Read subdirectories
+    const items = fs.readdirSync(fullPath);
+    const subdirs = [];
+
+    for (const item of items) {
+      const itemPath = path.join(fullPath, item);
+      if (itemPath.startsWith(THUMB_DIR_ABS)) continue;
+      
+      try {
+        const itemStats = fs.statSync(itemPath);
+        if (itemStats.isDirectory()) {
+          subdirs.push({
+            name: item,
+            path: path.join(albumPath, item).replace(/\\/g, '/')
+          });
+        }
+      } catch (err) {
+        // Skip items we can't stat
+      }
+    }
+
+    res.json({ subdirs });
+  } catch (err) {
+    console.error(err);
+    // Return empty array on error instead of 500
+    res.json({ subdirs: [] });
   }
 });
 
@@ -384,6 +700,9 @@ app.get('/files', async (req, res) => {
     const params = [];
     const whereClauses = [];
     
+    // Exclude virtual album marker entries
+    whereClauses.push("type != 'album'");
+    
     if (album) {
       whereClauses.push('album = ?');
       params.push(album);
@@ -393,9 +712,7 @@ app.get('/files', async (req, res) => {
       params.push(typeFilter);
     }
     
-    if (whereClauses.length > 0) {
-      whereClause = 'WHERE ' + whereClauses.join(' AND ');
-    }
+    whereClause = 'WHERE ' + whereClauses.join(' AND ');
 
     const validSortFields = ['createdAt', 'filePath', 'fileSize'];
     const orderBy = validSortFields.includes(sortBy) ? sortBy : 'createdAt';
@@ -506,7 +823,7 @@ app.get('/favorites', async (req, res) => {
     const { page: p, limit: l } = validatePagination(req.query.page, req.query.limit);
     const offset = (p - 1) * l;
 
-    const total = await db.get('SELECT COUNT(*) as count FROM media WHERE isFavorite = 1');
+    const total = await db.get("SELECT COUNT(*) as count FROM media WHERE isFavorite = 1 AND type != 'album'");
     
     const filesWithTags = await db.all(`
       SELECT 
@@ -515,7 +832,7 @@ app.get('/favorites', async (req, res) => {
       FROM media m
       LEFT JOIN media_tags mt ON m.id = mt.media_id
       LEFT JOIN tags t ON mt.tag_id = t.id
-      WHERE m.isFavorite = 1
+      WHERE m.isFavorite = 1 AND m.type != 'album'
       GROUP BY m.id
       ORDER BY m.createdAt DESC
       LIMIT ? OFFSET ?
@@ -613,12 +930,12 @@ app.get("/search", async (req, res) => {
     
     const searchTerm = `%${q.trim()}%`;
     
-    // Search in files and tags
+    // Search in files and tags (excluding virtual album entries)
     const files = await db.all(`
       SELECT DISTINCT m.* FROM media m
       LEFT JOIN media_tags mt ON m.id = mt.media_id
       LEFT JOIN tags t ON mt.tag_id = t.id
-      WHERE m.filePath LIKE ? OR m.album LIKE ? OR t.name LIKE ?
+      WHERE m.type != 'album' AND (m.filePath LIKE ? OR m.album LIKE ? OR t.name LIKE ?)
     `, [searchTerm, searchTerm, searchTerm]);
     
     // Fetch tags for results
@@ -641,11 +958,29 @@ app.get("/search", async (req, res) => {
 // --- STARTUP ---
 (async () => {
   await initDB();
-  await watchFiles();  // Wait for initial scan to complete
+  
+  // Store scan functions for manual triggering
+  const watcher = await watchFiles();
+  watchFiles.scanInitial = watcher.scanInitial;
+  watchFiles.scanAlbum = watcher.scanAlbum;
+  
+  // Start app immediately without waiting for scan
   app.listen(PORT, () => {
     console.log(`✅ Media library running at http://localhost:${PORT}`);
     console.log(`📁 Media directory: ${MEDIA_DIR}`);
     console.log(`🗄️ Database: ${DB_FILE}`);
     console.log(`🔧 Environment: ${NODE_ENV}`);
+    console.log(`📊 Auto-scan on startup: ${AUTO_SCAN_ON_STARTUP ? 'Enabled' : 'Disabled (use POST /scan to trigger)'}`);
+    
+    // Optionally run initial scan in background
+    if (AUTO_SCAN_ON_STARTUP) {
+      console.log(`[SCAN] Starting background scan...`);
+      watcher.scanInitial().catch(err => {
+        console.error('[SCAN] Background scan error:', err);
+      });
+    } else {
+      console.log(`[SCAN] Skipping auto-scan. Database has ${db.get('SELECT COUNT(*) as c FROM media').then(r => r.c || 0)} files.`);
+      console.log(`[SCAN] Trigger manual scan: curl -X POST http://localhost:${PORT}/scan`);
+    }
   });
 })();
